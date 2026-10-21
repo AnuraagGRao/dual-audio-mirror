@@ -1,5 +1,6 @@
 # Build outputs
 *.log
+*.txt
 *.pdb
 *.obj
 .vs/

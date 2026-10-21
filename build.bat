@@ -7,7 +7,7 @@ echo ========================================================
 set CSC="C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 set WPF_LIB="C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF"
 
-%CSC% /nologo /t:winexe /optimize+ /platform:x64 /out:"DualAudioMirror.exe" ^
+%CSC% /nologo /t:winexe /optimize+ /platform:x64 /win32icon:"app.ico" /out:"DualAudioMirror.exe" ^
   /lib:%WPF_LIB% ^
   /r:PresentationCore.dll ^
   /r:PresentationFramework.dll ^
