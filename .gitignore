@@ -1,0 +1,11 @@
+# Build outputs
+*.log
+*.pdb
+*.obj
+.vs/
+.idea/
+*.user
+*.suo
+
+# Keep compiled binary in release or root for easy double-click
+!DualAudioMirror.exe
