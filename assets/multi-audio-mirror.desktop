@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Multi Audio Mirror
+GenericName=Audio Mirroring Utility
+Comment=Zero-latency audio mirroring to multiple headphones and outputs
+Exec=multi-audio-mirror
+Icon=multi-audio-mirror
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;Player;
+Keywords=audio;sound;mirror;multi;sync;headphones;speakers;
+StartupNotify=true

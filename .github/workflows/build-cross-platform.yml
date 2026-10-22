@@ -4,6 +4,8 @@ on:
   push:
     paths:
       - 'rust/**'
+      - 'assets/**'
+      - 'platforms/**'
       - '.github/workflows/build-cross-platform.yml'
     branches:
       - master
@@ -20,7 +22,7 @@ jobs:
       - name: Install System Audio & GUI Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev libx11-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev libx11-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev xvfb
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -41,12 +43,27 @@ jobs:
           cd rust
           cargo build --release
 
-      - name: Package Linux Binary
+      - name: Smoke Test Binary (Headless GUI & Audio Init)
         run: |
-          mkdir -p dist
-          cp rust/target/release/multi-audio-mirror dist/multi-audio-mirror-linux-x86_64
-          chmod +x dist/multi-audio-mirror-linux-x86_64
-          tar -czf dist/multi-audio-mirror-linux-x86_64.tar.gz -C dist multi-audio-mirror-linux-x86_64
+          echo "[*] Running headless smoke test via xvfb..."
+          timeout 3s xvfb-run ./rust/target/release/multi-audio-mirror || EXIT_CODE=$?
+          if [ -z "$EXIT_CODE" ] || [ "$EXIT_CODE" -eq 124 ]; then
+            echo "[✓] Binary launched successfully and stayed active (timed out cleanly)."
+          else
+            echo "[!] Binary exited unexpectedly with code $EXIT_CODE"
+            exit $EXIT_CODE
+          fi
+
+      - name: Package Linux Bundle
+        run: |
+          mkdir -p dist/package
+          cp rust/target/release/multi-audio-mirror dist/package/multi-audio-mirror
+          cp assets/multi-audio-mirror.desktop dist/package/multi-audio-mirror.desktop
+          cp assets/app.png dist/package/multi-audio-mirror.png
+          cp platforms/linux/install.sh dist/package/install.sh
+          chmod +x dist/package/multi-audio-mirror dist/package/install.sh
+
+          tar -czf dist/multi-audio-mirror-linux-x86_64.tar.gz -C dist/package .
 
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
@@ -89,12 +106,57 @@ jobs:
           lipo -create \
             rust/target/aarch64-apple-darwin/release/multi-audio-mirror \
             rust/target/x86_64-apple-darwin/release/multi-audio-mirror \
-            -output dist/multi-audio-mirror-macos-universal
-          chmod +x dist/multi-audio-mirror-macos-universal
-          tar -czf dist/multi-audio-mirror-macos-universal.tar.gz -C dist multi-audio-mirror-macos-universal
+            -output dist/multi-audio-mirror-universal
+          chmod +x dist/multi-audio-mirror-universal
+          lipo -info dist/multi-audio-mirror-universal
 
-      - name: Upload macOS Artifact
+      - name: Generate Apple ICNS Icon
+        run: |
+          mkdir -p AppIcon.iconset
+          sips -z 16 16     assets/app.png --out AppIcon.iconset/icon_16x16.png
+          sips -z 32 32     assets/app.png --out AppIcon.iconset/icon_16x16@2x.png
+          sips -z 32 32     assets/app.png --out AppIcon.iconset/icon_32x32.png
+          sips -z 64 64     assets/app.png --out AppIcon.iconset/icon_32x32@2x.png
+          sips -z 128 128   assets/app.png --out AppIcon.iconset/icon_128x128.png
+          sips -z 256 256   assets/app.png --out AppIcon.iconset/icon_128x128@2x.png
+          sips -z 256 256   assets/app.png --out AppIcon.iconset/icon_256x256.png
+          sips -z 512 512   assets/app.png --out AppIcon.iconset/icon_256x256@2x.png
+          sips -z 512 512   assets/app.png --out AppIcon.iconset/icon_512x512.png
+          sips -z 1024 1024 assets/app.png --out AppIcon.iconset/icon_512x512@2x.png
+          iconutil -c icns AppIcon.iconset -o dist/AppIcon.icns
+
+      - name: Assemble macOS .app Bundle
+        run: |
+          APP_DIR="dist/Multi Audio Mirror.app"
+          mkdir -p "$APP_DIR/Contents/MacOS"
+          mkdir -p "$APP_DIR/Contents/Resources"
+
+          cp dist/multi-audio-mirror-universal "$APP_DIR/Contents/MacOS/multi-audio-mirror"
+          chmod +x "$APP_DIR/Contents/MacOS/multi-audio-mirror"
+          cp assets/Info.plist "$APP_DIR/Contents/Info.plist"
+          cp dist/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
+
+      - name: Build macOS DMG Installer
+        run: |
+          mkdir -p dmg_stage
+          cp -R "dist/Multi Audio Mirror.app" dmg_stage/
+          ln -s /Applications dmg_stage/Applications
+
+          hdiutil create -volname "Multi Audio Mirror" \
+            -srcfolder dmg_stage \
+            -ov -format UDZO \
+            dist/MultiAudioMirror-macOS-Universal.dmg
+
+          tar -czf dist/multi-audio-mirror-macos-universal.tar.gz -C dist "Multi Audio Mirror.app"
+
+      - name: Upload macOS DMG Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: multi-audio-mirror-macos
+          name: multi-audio-mirror-macos-dmg
+          path: dist/MultiAudioMirror-macOS-Universal.dmg
+
+      - name: Upload macOS Tarball Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-audio-mirror-macos-tar
           path: dist/multi-audio-mirror-macos-universal.tar.gz
