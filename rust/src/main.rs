@@ -1,11 +1,23 @@
 mod audio;
+mod single_instance;
 mod ui;
 
 use audio::AudioEngine;
-use ui::MultiAudioMirrorApp;
+use single_instance::SingleInstanceGuard;
 use std::sync::Arc;
+use ui::MultiAudioMirrorApp;
 
 fn main() -> eframe::Result<()> {
+    // 1. Single Instance Check: ensure only one instance runs per user/OS session
+    let (wakeup_tx, wakeup_rx) = crossbeam_channel::unbounded();
+    let _instance_guard = match SingleInstanceGuard::new(wakeup_tx) {
+        Ok(guard) => guard,
+        Err(()) => {
+            // Another instance is already running; signal was sent to bring it to front
+            return Ok(());
+        }
+    };
+
     let engine = match AudioEngine::new() {
         Ok(mut eng) => {
             let out_devs = eng.get_output_devices();
@@ -39,7 +51,7 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(|cc| {
             MultiAudioMirrorApp::setup_theme(&cc.egui_ctx);
-            Ok(Box::new(MultiAudioMirrorApp::new(engine)))
+            Ok(Box::new(MultiAudioMirrorApp::new(engine, wakeup_rx)))
         }),
     )
 }

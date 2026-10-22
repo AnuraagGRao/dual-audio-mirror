@@ -452,6 +452,16 @@ namespace DualAudioMirror {
                 _window.Hide();
             };
 
+            _window.SourceInitialized += (s, e) => {
+                try {
+                    var helper = new System.Windows.Interop.WindowInteropHelper(_window);
+                    var source = System.Windows.Interop.HwndSource.FromHwnd(helper.Handle);
+                    if (source != null) {
+                        source.AddHook(WndProc);
+                    }
+                } catch { }
+            };
+
             // Auto-start checkbox
             _chkAutoStart.IsChecked = IsAutoStartEnabled();
             _chkAutoStart.Checked += (s, e) => SetAutoStart(true);
@@ -465,6 +475,19 @@ namespace DualAudioMirror {
 
             // Initial render of output channels
             RefreshChannelCards();
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+        private static extern uint RegisterWindowMessage(string lpString);
+
+        private static readonly uint WM_SHOWME = RegisterWindowMessage("DUAL_AUDIO_MIRROR_WAKEUP");
+
+        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
+            if (WM_SHOWME != 0 && (uint)msg == WM_SHOWME) {
+                _window.Dispatcher.Invoke(ShowWindow);
+                handled = true;
+            }
+            return IntPtr.Zero;
         }
 
         private void RefreshChannelCards() {
@@ -593,9 +616,16 @@ namespace DualAudioMirror {
         }
 
         private void ShowWindow() {
-            _window.Show();
-            _window.WindowState = WindowState.Normal;
+            if (!_window.IsVisible) {
+                _window.Show();
+            }
+            if (_window.WindowState == WindowState.Minimized) {
+                _window.WindowState = WindowState.Normal;
+            }
             _window.Activate();
+            _window.Topmost = true;
+            _window.Topmost = false;
+            _window.Focus();
         }
 
         private void SetupTimer() {

@@ -18,10 +18,14 @@ pub struct MultiAudioMirrorApp {
     input_devices: Vec<String>,
     output_devices: Vec<String>,
     selected_input: Option<String>,
+    wakeup_rx: crossbeam_channel::Receiver<()>,
 }
 
 impl MultiAudioMirrorApp {
-    pub fn new(engine: Arc<parking_lot::Mutex<AudioEngine>>) -> Self {
+    pub fn new(
+        engine: Arc<parking_lot::Mutex<AudioEngine>>,
+        wakeup_rx: crossbeam_channel::Receiver<()>,
+    ) -> Self {
         let (in_devs, out_devs, sel_in) = {
             let eng = engine.lock();
             let in_devs = eng.get_input_devices();
@@ -35,6 +39,7 @@ impl MultiAudioMirrorApp {
             input_devices: in_devs,
             output_devices: out_devs,
             selected_input: sel_in,
+            wakeup_rx,
         }
     }
 
@@ -55,6 +60,13 @@ impl MultiAudioMirrorApp {
 
 impl eframe::App for MultiAudioMirrorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Handle wakeup signal from another instance trying to open
+        if self.wakeup_rx.try_recv().is_ok() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.request_repaint();
+        }
+
         ctx.request_repaint();
 
         egui::CentralPanel::default().show(ctx, |ui| {
