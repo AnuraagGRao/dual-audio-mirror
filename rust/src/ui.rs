@@ -66,7 +66,7 @@ impl eframe::App for MultiAudioMirrorApp {
             egui::Frame::none()
                 .fill(CARD_BG)
                 .rounding(Rounding::same(12.0))
-                .stroke(Stroke::new(1.0, BORDER_COLOR))
+                .stroke(Stroke::new(1.0_f32, BORDER_COLOR))
                 .inner_margin(egui::Margin::symmetric(16.0, 12.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -85,7 +85,7 @@ impl eframe::App for MultiAudioMirrorApp {
 
                             let status_text = {
                                 let eng = self.engine.lock();
-                                eng.status.read().clone()
+                                eng.get_status()
                             };
 
                             ui.label(
@@ -103,7 +103,7 @@ impl eframe::App for MultiAudioMirrorApp {
             egui::Frame::none()
                 .fill(CARD_BG)
                 .rounding(Rounding::same(12.0))
-                .stroke(Stroke::new(1.0, BORDER_COLOR))
+                .stroke(Stroke::new(1.0_f32, BORDER_COLOR))
                 .inner_margin(egui::Margin::same(16.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -209,7 +209,7 @@ impl eframe::App for MultiAudioMirrorApp {
                 .show(ui, |ui| {
                     let channels = {
                         let eng = self.engine.lock();
-                        eng.channels.read().clone()
+                        eng.get_channels_snapshot()
                     };
 
                     let total_count = channels.len();
@@ -220,7 +220,7 @@ impl eframe::App for MultiAudioMirrorApp {
                         egui::Frame::none()
                             .fill(CARD_BG)
                             .rounding(Rounding::same(12.0))
-                            .stroke(Stroke::new(1.0, BORDER_COLOR))
+                            .stroke(Stroke::new(1.0_f32, BORDER_COLOR))
                             .inner_margin(egui::Margin::same(16.0))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
@@ -350,7 +350,7 @@ impl eframe::App for MultiAudioMirrorApp {
             egui::Frame::none()
                 .fill(CARD_BG)
                 .rounding(Rounding::same(10.0))
-                .stroke(Stroke::new(1.0, BORDER_COLOR))
+                .stroke(Stroke::new(1.0_f32, BORDER_COLOR))
                 .inner_margin(egui::Margin::symmetric(14.0, 10.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {

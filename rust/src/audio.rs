@@ -5,10 +5,6 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host, Stream, StreamConfig};
 use parking_lot::{Mutex, RwLock};
 
-pub struct AudioDeviceInfo {
-    pub name: String,
-}
-
 pub struct OutputChannel {
     pub id: String,
     pub device_name: String,
@@ -17,7 +13,6 @@ pub struct OutputChannel {
     pub peak_l: Arc<AtomicU32>,        // Stored as f32 bits
     pub peak_r: Arc<AtomicU32>,        // Stored as f32 bits
     sender: Arc<Mutex<Option<crossbeam_channel::Sender<f32>>>>,
-    _stream: Option<Stream>,
 }
 
 impl OutputChannel {
@@ -30,7 +25,6 @@ impl OutputChannel {
             peak_l: Arc::new(AtomicU32::new(0)),
             peak_r: Arc::new(AtomicU32::new(0)),
             sender: Arc::new(Mutex::new(None)),
-            _stream: None,
         }
     }
 
@@ -75,6 +69,7 @@ pub struct AudioEngine {
     pub peak_master_r: Arc<AtomicU32>,
     pub status: Arc<RwLock<String>>,
     _input_stream: Option<Stream>,
+    _output_streams: Vec<Stream>,
 }
 
 impl AudioEngine {
@@ -88,9 +83,18 @@ impl AudioEngine {
             peak_master_r: Arc::new(AtomicU32::new(0)),
             status: Arc::new(RwLock::new("Standby • Zero Lag".to_string())),
             _input_stream: None,
+            _output_streams: Vec::new(),
         };
 
         Ok(engine)
+    }
+
+    pub fn get_status(&self) -> String {
+        self.status.read().clone()
+    }
+
+    pub fn get_channels_snapshot(&self) -> Vec<Arc<OutputChannel>> {
+        self.channels.read().clone()
     }
 
     pub fn get_input_devices(&self) -> Vec<String> {
@@ -153,8 +157,8 @@ impl AudioEngine {
         let sample_rate = in_config.sample_rate();
         let channels_in = in_config.channels();
 
-        // 2. Setup Output Channels
-        let channel_list = self.channels.read().clone();
+        // 2. Setup Output Channels & Output Streams
+        let channel_list = self.get_channels_snapshot();
         for ch in channel_list.iter() {
             if let Ok(out_dev) = self.find_output_device(&ch.device_name) {
                 let out_config = StreamConfig {
@@ -163,7 +167,6 @@ impl AudioEngine {
                     buffer_size: cpal::BufferSize::Default,
                 };
 
-                // Capacity for ~50ms of audio (48000 * 2 * 0.05 = ~4800 floats)
                 let buffer_capacity = ((sample_rate.0 as usize) * 2 / 20).max(4096);
                 let (tx, rx) = crossbeam_channel::bounded::<f32>(buffer_capacity);
                 *ch.sender.lock() = Some(tx);
@@ -208,7 +211,9 @@ impl AudioEngine {
                 );
 
                 if let Ok(stream) = out_stream {
-                    let _ = stream.play();
+                    if stream.play().is_ok() {
+                        self._output_streams.push(stream);
+                    }
                 }
             }
         }
@@ -286,6 +291,7 @@ impl AudioEngine {
 
     pub fn stop(&mut self) {
         self._input_stream = None;
+        self._output_streams.clear();
         let channels = self.channels.read();
         for ch in channels.iter() {
             *ch.sender.lock() = None;

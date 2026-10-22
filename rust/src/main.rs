@@ -39,7 +39,7 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(|cc| {
             MultiAudioMirrorApp::setup_theme(&cc.egui_ctx);
-            Box::new(MultiAudioMirrorApp::new(engine))
+            Ok(Box::new(MultiAudioMirrorApp::new(engine)))
         }),
     )
 }
