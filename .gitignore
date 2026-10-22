@@ -1,12 +1,13 @@
-# Build outputs
-*.log
-*.txt
-*.pdb
-*.obj
-.vs/
-.idea/
-*.user
-*.suo
-
-# Keep compiled binary in release or root for easy double-click
+# Build artifacts
+target/
+rust/target/
+*.exe
 !DualAudioMirror.exe
+*.log
+startup.log
+crash.txt
+*.pdb
+
+# OS files
+.DS_Store
+Thumbs.db
