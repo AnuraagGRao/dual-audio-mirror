@@ -1,0 +1,100 @@
+name: Build Multi-Audio Mirror (Mac & Linux)
+
+on:
+  push:
+    paths:
+      - 'rust/**'
+      - '.github/workflows/build-cross-platform.yml'
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Linux (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install System Audio & GUI Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libclang-dev libx11-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+
+      - name: Build Release Binary
+        run: |
+          cd rust
+          cargo build --release
+
+      - name: Package Linux Binary
+        run: |
+          mkdir -p dist
+          cp rust/target/release/multi-audio-mirror dist/multi-audio-mirror-linux-x86_64
+          chmod +x dist/multi-audio-mirror-linux-x86_64
+          tar -czf dist/multi-audio-mirror-linux-x86_64.tar.gz -C dist multi-audio-mirror-linux-x86_64
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-audio-mirror-linux
+          path: dist/multi-audio-mirror-linux-x86_64.tar.gz
+
+  build-macos:
+    name: macOS (Universal / Apple Silicon)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cargo Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+
+      - name: Build Release Binaries
+        run: |
+          cd rust
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+
+      - name: Create Universal Binary
+        run: |
+          mkdir -p dist
+          lipo -create \
+            rust/target/aarch64-apple-darwin/release/multi-audio-mirror \
+            rust/target/x86_64-apple-darwin/release/multi-audio-mirror \
+            -output dist/multi-audio-mirror-macos-universal
+          chmod +x dist/multi-audio-mirror-macos-universal
+          tar -czf dist/multi-audio-mirror-macos-universal.tar.gz -C dist multi-audio-mirror-macos-universal
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-audio-mirror-macos
+          path: dist/multi-audio-mirror-macos-universal.tar.gz
