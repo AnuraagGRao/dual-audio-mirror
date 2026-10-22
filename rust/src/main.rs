@@ -6,10 +6,8 @@ use ui::MultiAudioMirrorApp;
 use std::sync::Arc;
 
 fn main() -> eframe::Result<()> {
-    // Initialize Audio Engine
     let engine = match AudioEngine::new() {
         Ok(mut eng) => {
-            // Auto-populate initial output channels from available output devices
             let out_devs = eng.get_output_devices();
             if let Some(dev1) = out_devs.first() {
                 eng.add_channel(dev1.clone());
@@ -18,7 +16,6 @@ fn main() -> eframe::Result<()> {
                 eng.add_channel(dev2.clone());
             }
 
-            // Start audio pipeline
             let _ = eng.start();
             Arc::new(parking_lot::Mutex::new(eng))
         }
@@ -42,7 +39,7 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(|cc| {
             MultiAudioMirrorApp::setup_theme(&cc.egui_ctx);
-            Ok(Box::new(MultiAudioMirrorApp::new(engine)))
+            Box::new(MultiAudioMirrorApp::new(engine))
         }),
     )
 }

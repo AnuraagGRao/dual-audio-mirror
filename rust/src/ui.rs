@@ -1,5 +1,5 @@
 use crate::audio::AudioEngine;
-use eframe::egui::{self, Color32, CornerRadius, Stroke};
+use eframe::egui::{self, Color32, Rounding, Stroke};
 use std::sync::Arc;
 
 pub const BG_COLOR: Color32 = Color32::from_rgb(12, 16, 23);
@@ -44,18 +44,17 @@ impl MultiAudioMirrorApp {
         visuals.window_fill = BG_COLOR;
         visuals.override_text_color = Some(Color32::from_rgb(241, 245, 249));
         visuals.widgets.inactive.bg_fill = BUTTON_BG;
-        visuals.widgets.inactive.corner_radius = CornerRadius::same(6);
+        visuals.widgets.inactive.rounding = Rounding::same(6.0);
         visuals.widgets.hovered.bg_fill = Color32::from_rgb(51, 65, 85);
-        visuals.widgets.hovered.corner_radius = CornerRadius::same(6);
+        visuals.widgets.hovered.rounding = Rounding::same(6.0);
         visuals.widgets.active.bg_fill = CYAN_ACCENT;
-        visuals.widgets.active.corner_radius = CornerRadius::same(6);
+        visuals.widgets.active.rounding = Rounding::same(6.0);
         ctx.set_visuals(visuals);
     }
 }
 
 impl eframe::App for MultiAudioMirrorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Request repaint for smooth 60 FPS VU meter rendering
         ctx.request_repaint();
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -66,12 +65,11 @@ impl eframe::App for MultiAudioMirrorApp {
             // =========================================================
             egui::Frame::none()
                 .fill(CARD_BG)
-                .corner_radius(CornerRadius::same(12))
+                .rounding(Rounding::same(12.0))
                 .stroke(Stroke::new(1.0, BORDER_COLOR))
-                .inner_margin(egui::Margin::symmetric(16, 12))
+                .inner_margin(egui::Margin::symmetric(16.0, 12.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        // Cyan Accent Indicator
                         let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 24.0), egui::Sense::hover());
                         ui.painter().rect_filled(rect, 4.0, CYAN_ACCENT);
 
@@ -104,9 +102,9 @@ impl eframe::App for MultiAudioMirrorApp {
             // =========================================================
             egui::Frame::none()
                 .fill(CARD_BG)
-                .corner_radius(CornerRadius::same(12))
+                .rounding(Rounding::same(12.0))
                 .stroke(Stroke::new(1.0, BORDER_COLOR))
-                .inner_margin(egui::Margin::same(16))
+                .inner_margin(egui::Margin::same(16.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -126,11 +124,10 @@ impl eframe::App for MultiAudioMirrorApp {
 
                     ui.add_space(4.0);
 
-                    // Input device selector
                     let mut changed_input = false;
                     let current_in = self.selected_input.clone().unwrap_or_else(|| "Default Input Device".to_string());
 
-                    egui::ComboBox::from_id_salt("combo_input")
+                    egui::ComboBox::from_id_source("combo_input")
                         .width(ui.available_width())
                         .selected_text(&current_in)
                         .show_ui(ui, |ui| {
@@ -174,11 +171,10 @@ impl eframe::App for MultiAudioMirrorApp {
                         .color(MUTED_TEXT),
                 );
 
-                // Multi-sync badge
                 egui::Frame::none()
                     .fill(Color32::from_rgb(30, 41, 59))
-                    .corner_radius(CornerRadius::same(4))
-                    .inner_margin(egui::Margin::symmetric(6, 2))
+                    .rounding(Rounding::same(4.0))
+                    .inner_margin(egui::Margin::symmetric(6.0, 2.0))
                     .show(ui, |ui| {
                         ui.label(
                             egui::RichText::new("MULTI-SYNC")
@@ -196,7 +192,7 @@ impl eframe::App for MultiAudioMirrorApp {
                             .color(Color32::WHITE),
                     )
                     .fill(BLUE_ADD)
-                    .corner_radius(CornerRadius::same(6));
+                    .rounding(Rounding::same(6.0));
 
                     if ui.add(btn_add).clicked() {
                         let next_dev = self.output_devices.first().cloned().unwrap_or_else(|| "Default Output".to_string());
@@ -223,11 +219,10 @@ impl eframe::App for MultiAudioMirrorApp {
                     for (idx, ch) in channels.iter().enumerate() {
                         egui::Frame::none()
                             .fill(CARD_BG)
-                            .corner_radius(CornerRadius::same(12))
+                            .rounding(Rounding::same(12.0))
                             .stroke(Stroke::new(1.0, BORDER_COLOR))
-                            .inner_margin(egui::Margin::same(16))
+                            .inner_margin(egui::Margin::same(16.0))
                             .show(ui, |ui| {
-                                // Channel Header
                                 ui.horizontal(|ui| {
                                     ui.label(
                                         egui::RichText::new(format!("OUTPUT {}", idx + 1))
@@ -238,8 +233,8 @@ impl eframe::App for MultiAudioMirrorApp {
 
                                     egui::Frame::none()
                                         .fill(Color32::from_rgb(6, 78, 59))
-                                        .corner_radius(CornerRadius::same(4))
-                                        .inner_margin(egui::Margin::symmetric(6, 2))
+                                        .rounding(Rounding::same(4.0))
+                                        .inner_margin(egui::Margin::symmetric(6.0, 2.0))
                                         .show(ui, |ui| {
                                             ui.label(
                                                 egui::RichText::new("SYNCED")
@@ -258,7 +253,7 @@ impl eframe::App for MultiAudioMirrorApp {
                                                     .color(CRIMSON_ALERT),
                                             )
                                             .fill(BUTTON_BG)
-                                            .corner_radius(CornerRadius::same(4));
+                                            .rounding(Rounding::same(4.0));
 
                                             if ui.add(btn_remove).clicked() {
                                                 remove_id = Some(ch.id.clone());
@@ -269,15 +264,13 @@ impl eframe::App for MultiAudioMirrorApp {
 
                                 ui.add_space(4.0);
 
-                                // Output Device Selector
                                 let mut current_device = ch.device_name.clone();
-                                egui::ComboBox::from_id_salt(format!("combo_out_{}", ch.id))
+                                egui::ComboBox::from_id_source(format!("combo_out_{}", ch.id))
                                     .width(ui.available_width())
                                     .selected_text(&current_device)
                                     .show_ui(ui, |ui| {
                                         for out_d in &self.output_devices {
                                             if ui.selectable_value(&mut current_device, out_d.clone(), out_d).clicked() {
-                                                // Channel device changed
                                                 need_restart = true;
                                             }
                                         }
@@ -285,7 +278,6 @@ impl eframe::App for MultiAudioMirrorApp {
 
                                 ui.add_space(6.0);
 
-                                // Volume Slider Row
                                 let mut vol = (ch.get_volume() * 100.0).round();
                                 ui.horizontal(|ui| {
                                     ui.label(
@@ -310,7 +302,6 @@ impl eframe::App for MultiAudioMirrorApp {
 
                                 ui.add_space(6.0);
 
-                                // Meters & Mute Row
                                 ui.horizontal(|ui| {
                                     let (p_l, p_r) = ch.get_peaks();
 
@@ -331,7 +322,7 @@ impl eframe::App for MultiAudioMirrorApp {
                                         )
                                         .min_size(egui::vec2(64.0, 28.0))
                                         .fill(mute_bg)
-                                        .corner_radius(CornerRadius::same(6));
+                                        .rounding(Rounding::same(6.0));
 
                                         if ui.add(btn_mute).clicked() {
                                             ch.set_muted(!is_muted);
@@ -358,9 +349,9 @@ impl eframe::App for MultiAudioMirrorApp {
             // =========================================================
             egui::Frame::none()
                 .fill(CARD_BG)
-                .corner_radius(CornerRadius::same(10))
+                .rounding(Rounding::same(10.0))
                 .stroke(Stroke::new(1.0, BORDER_COLOR))
-                .inner_margin(egui::Margin::symmetric(14, 10))
+                .inner_margin(egui::Margin::symmetric(14.0, 10.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -383,7 +374,7 @@ impl eframe::App for MultiAudioMirrorApp {
 }
 
 fn draw_stereo_meter(ui: &mut egui::Ui, peak_l: f32, peak_r: f32, fill_color: Color32) {
-    let width = ui.available_width() - 80.0; // Reserve space for mute button
+    let width = ui.available_width() - 80.0;
     let bar_height = 6.0;
 
     let (rect_l, _) = ui.allocate_exact_size(egui::vec2(width.max(100.0), bar_height), egui::Sense::hover());

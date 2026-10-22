@@ -4,8 +4,6 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host, Stream, StreamConfig};
 use parking_lot::{Mutex, RwLock};
-use ringbuf::traits::{Consumer, Producer, Split};
-use ringbuf::HeapRb;
 
 pub struct AudioDeviceInfo {
     pub name: String,
@@ -18,7 +16,7 @@ pub struct OutputChannel {
     pub is_muted: Arc<AtomicBool>,
     pub peak_l: Arc<AtomicU32>,        // Stored as f32 bits
     pub peak_r: Arc<AtomicU32>,        // Stored as f32 bits
-    producer: Arc<Mutex<Option<ringbuf::wrap::caching::Caching<Arc<HeapRb<f32>>, true, false>>>>,
+    sender: Arc<Mutex<Option<crossbeam_channel::Sender<f32>>>>,
     _stream: Option<Stream>,
 }
 
@@ -31,7 +29,7 @@ impl OutputChannel {
             is_muted: Arc::new(AtomicBool::new(false)),
             peak_l: Arc::new(AtomicU32::new(0)),
             peak_r: Arc::new(AtomicU32::new(0)),
-            producer: Arc::new(Mutex::new(None)),
+            sender: Arc::new(Mutex::new(None)),
             _stream: None,
         }
     }
@@ -60,11 +58,10 @@ impl OutputChannel {
     }
 
     pub fn push_samples(&self, samples: &[f32]) {
-        let mut guard = self.producer.lock();
-        if let Some(ref mut prod) = *guard {
+        let guard = self.sender.lock();
+        if let Some(ref tx) = *guard {
             for &s in samples {
-                // Non-blocking try_push: drops frame if consumer is lagging
-                let _ = prod.try_push(s);
+                let _ = tx.try_send(s);
             }
         }
     }
@@ -89,7 +86,7 @@ impl AudioEngine {
             channels: Arc::new(RwLock::new(Vec::new())),
             peak_master_l: Arc::new(AtomicU32::new(0)),
             peak_master_r: Arc::new(AtomicU32::new(0)),
-            status: Arc::new(RwLock::new("Initializing Audio Engine...".to_string())),
+            status: Arc::new(RwLock::new("Standby • Zero Lag".to_string())),
             _input_stream: None,
         };
 
@@ -141,7 +138,7 @@ impl AudioEngine {
     pub fn start(&mut self) -> Result<()> {
         self.stop();
 
-        // 1. Resolve Capture / Input Device
+        // 1. Resolve Input Device
         let input_dev = match self.selected_input_device.read().clone() {
             Some(ref name) => self.find_input_device(name)?,
             None => self
@@ -156,7 +153,7 @@ impl AudioEngine {
         let sample_rate = in_config.sample_rate();
         let channels_in = in_config.channels();
 
-        // 2. Setup Output Channels & Streams
+        // 2. Setup Output Channels
         let channel_list = self.channels.read().clone();
         for ch in channel_list.iter() {
             if let Ok(out_dev) = self.find_output_device(&ch.device_name) {
@@ -166,12 +163,10 @@ impl AudioEngine {
                     buffer_size: cpal::BufferSize::Default,
                 };
 
-                // Allocate 30ms lock-free ring buffer (48000 * 2 * 0.03 = ~2880 floats)
-                let buffer_capacity = (sample_rate.0 as usize) * 2 * 3 / 10;
-                let rb = Arc::new(HeapRb::<f32>::new(buffer_capacity.max(4096)));
-                let (prod, mut cons) = rb.split();
-
-                *ch.producer.lock() = Some(prod);
+                // Capacity for ~50ms of audio (48000 * 2 * 0.05 = ~4800 floats)
+                let buffer_capacity = ((sample_rate.0 as usize) * 2 / 20).max(4096);
+                let (tx, rx) = crossbeam_channel::bounded::<f32>(buffer_capacity);
+                *ch.sender.lock() = Some(tx);
 
                 let vol_atomic = ch.volume.clone();
                 let mute_atomic = ch.is_muted.clone();
@@ -189,8 +184,8 @@ impl AudioEngine {
                         let mut max_r = 0.0f32;
 
                         for frame in data.chunks_exact_mut(2) {
-                            let l = cons.try_pop().unwrap_or(0.0) * gain;
-                            let r = cons.try_pop().unwrap_or(0.0) * gain;
+                            let l = rx.try_recv().unwrap_or(0.0) * gain;
+                            let r = rx.try_recv().unwrap_or(0.0) * gain;
 
                             frame[0] = l;
                             frame[1] = r;
@@ -213,15 +208,12 @@ impl AudioEngine {
                 );
 
                 if let Ok(stream) = out_stream {
-                    if let Ok(()) = stream.play() {
-                        // Store stream inside channel to keep alive
-                        // (Stream is kept alive via unsafe transmute or wrapper if needed, or stored in engine)
-                    }
+                    let _ = stream.play();
                 }
             }
         }
 
-        // 3. Build Capture Stream
+        // 3. Build Input Capture Stream
         let active_channels = self.channels.clone();
         let peak_m_l = self.peak_master_l.clone();
         let peak_m_r = self.peak_master_r.clone();
@@ -238,7 +230,6 @@ impl AudioEngine {
                 let mut max_l = 0.0f32;
                 let mut max_r = 0.0f32;
 
-                // Stereo sample collection
                 let mut stereo_buffer = Vec::with_capacity(data.len() / (channels_in as usize) * 2);
 
                 if channels_in >= 2 {
@@ -275,7 +266,6 @@ impl AudioEngine {
                 peak_m_l.store(max_l.to_bits(), Ordering::Relaxed);
                 peak_m_r.store(max_r.to_bits(), Ordering::Relaxed);
 
-                // Fan out to each channel's lock-free ring buffer
                 let channels = active_channels.read();
                 for ch in channels.iter() {
                     ch.push_samples(&stereo_buffer);
@@ -298,7 +288,7 @@ impl AudioEngine {
         self._input_stream = None;
         let channels = self.channels.read();
         for ch in channels.iter() {
-            *ch.producer.lock() = None;
+            *ch.sender.lock() = None;
         }
         *self.status.write() = "Standby • Engine Stopped".to_string();
     }
