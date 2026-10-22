@@ -144,11 +144,20 @@ impl AudioEngine {
 
         // 1. Resolve Input Device
         let input_dev = match self.selected_input_device.read().clone() {
-            Some(ref name) => self.find_input_device(name)?,
-            None => self
-                .host
-                .default_input_device()
-                .context("No default input device available")?,
+            Some(ref name) => match self.find_input_device(name) {
+                Ok(dev) => dev,
+                Err(_) => {
+                    *self.status.write() = "Selected input not found".to_string();
+                    return Ok(());
+                }
+            },
+            None => match self.host.default_input_device() {
+                Some(dev) => dev,
+                None => {
+                    *self.status.write() = "Standby • No Audio Device Found".to_string();
+                    return Ok(());
+                }
+            },
         };
 
         let in_config = input_dev
