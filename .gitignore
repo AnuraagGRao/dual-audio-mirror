@@ -1,6 +1,8 @@
 # Build artifacts
 target/
 rust/target/
+dist/
+dist-*/
 *.exe
 !DualAudioMirror.exe
 *.log
