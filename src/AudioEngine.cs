@@ -90,6 +90,118 @@ namespace DualAudioMirror {
         public override string ToString() { return Name; }
     }
 
+    /// <summary>
+    /// Zero-allocation, high-performance circular audio buffer for stereo 32-bit float samples.
+    /// Eliminates audio tearing, buffer drops, and hardware clock-drift between independent audio endpoints.
+    /// </summary>
+    internal class AudioRingBuffer {
+        private static readonly float[] Silence = new float[16384];
+
+        private readonly float[] _buffer;
+        private readonly int _capacityFloats;
+        private int _writePos;
+        private int _readPos;
+        private int _availableFloats;
+        private readonly object _lock = new object();
+
+        public AudioRingBuffer(int capacityFrames = 48000) {
+            _capacityFloats = capacityFrames * 2; // 2 floats per stereo frame
+            _buffer = new float[_capacityFloats];
+            _writePos = 0;
+            _readPos = 0;
+            _availableFloats = 0;
+        }
+
+        public int AvailableFrames {
+            get {
+                lock (_lock) {
+                    return _availableFloats / 2;
+                }
+            }
+        }
+
+        public void Write(float[] source, int offset, int frameCount) {
+            int floatCount = frameCount * 2;
+            if (floatCount <= 0) return;
+
+            lock (_lock) {
+                // If writing would exceed capacity, advance read pointer (drop oldest) to avoid blocking
+                int space = _capacityFloats - _availableFloats;
+                if (floatCount > space) {
+                    int overflow = floatCount - space;
+                    _readPos = (_readPos + overflow) % _capacityFloats;
+                    _availableFloats -= overflow;
+                }
+
+                int firstChunk = Math.Min(floatCount, _capacityFloats - _writePos);
+                Array.Copy(source, offset, _buffer, _writePos, firstChunk);
+                _writePos = (_writePos + firstChunk) % _capacityFloats;
+
+                int secondChunk = floatCount - firstChunk;
+                if (secondChunk > 0) {
+                    Array.Copy(source, offset + firstChunk, _buffer, _writePos, secondChunk);
+                    _writePos = (_writePos + secondChunk) % _capacityFloats;
+                }
+
+                _availableFloats += floatCount;
+            }
+        }
+
+        public void Read(IntPtr destination, int frameCount) {
+            int floatCount = frameCount * 2;
+            if (floatCount <= 0) return;
+
+            lock (_lock) {
+                int toRead = Math.Min(floatCount, _availableFloats);
+                if (toRead > 0) {
+                    int firstChunk = Math.Min(toRead, _capacityFloats - _readPos);
+                    Marshal.Copy(_buffer, _readPos, destination, firstChunk);
+                    _readPos = (_readPos + firstChunk) % _capacityFloats;
+
+                    int secondChunk = toRead - firstChunk;
+                    if (secondChunk > 0) {
+                        IntPtr destSecond = new IntPtr(destination.ToInt64() + firstChunk * sizeof(float));
+                        Marshal.Copy(_buffer, _readPos, destSecond, secondChunk);
+                        _readPos = (_readPos + secondChunk) % _capacityFloats;
+                    }
+
+                    _availableFloats -= toRead;
+                }
+
+                // If hardware requested more frames than available (underrun protection), pad with silence
+                if (toRead < floatCount) {
+                    int missing = floatCount - toRead;
+                    IntPtr destOffset = new IntPtr(destination.ToInt64() + toRead * sizeof(float));
+                    int padded = 0;
+                    while (padded < missing) {
+                        int chunk = Math.Min(missing - padded, Silence.Length);
+                        Marshal.Copy(Silence, 0, new IntPtr(destOffset.ToInt64() + padded * sizeof(float)), chunk);
+                        padded += chunk;
+                    }
+                }
+            }
+        }
+
+        public void MaintainWatermark(int maxAllowedFrames) {
+            lock (_lock) {
+                int currentFrames = _availableFloats / 2;
+                if (currentFrames > maxAllowedFrames) {
+                    int excessFloats = (currentFrames - maxAllowedFrames) * 2;
+                    _readPos = (_readPos + excessFloats) % _capacityFloats;
+                    _availableFloats -= excessFloats;
+                }
+            }
+        }
+
+        public void Clear() {
+            lock (_lock) {
+                _writePos = 0;
+                _readPos = 0;
+                _availableFloats = 0;
+            }
+        }
+    }
+
     public class OutputChannel {
         public string Id { get; set; }
         public string DeviceId { get; set; }
@@ -102,11 +214,13 @@ namespace DualAudioMirror {
         internal IAudioRenderClient Render;
         internal uint BufferSize;
         internal float[] ProcessBuffer;
+        internal readonly AudioRingBuffer Fifo;
 
         public OutputChannel() {
             Id = Guid.NewGuid().ToString("N");
             Volume = 1.0f;
             IsMuted = false;
+            Fifo = new AudioRingBuffer(48000); // 1 sec at 48kHz stereo
         }
 
         public OutputChannel(string deviceId, float volume = 1.0f) : this() {
@@ -125,6 +239,12 @@ namespace DualAudioMirror {
 
         [DllImport("Avrt.dll")]
         private static extern bool AvRevertMmThreadCharacteristics(IntPtr AvrtHandle);
+
+        [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
+        private static extern uint TimeBeginPeriod(uint uMilliseconds);
+
+        [DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
+        private static extern uint TimeEndPeriod(uint uMilliseconds);
 
         private Thread _workerThread;
         private volatile bool _isRunning;
@@ -237,18 +357,22 @@ namespace DualAudioMirror {
         private void AudioLoop() {
             uint taskIndex = 0;
             IntPtr mmcssHandle = AvSetMmThreadCharacteristics("Pro Audio", ref taskIndex);
+            TimeBeginPeriod(1);
 
-            while (_isRunning) {
-                try {
-                    RunStreamingSession();
-                } catch (Exception ex) {
-                    TriggerStatus("Audio Engine Warning: " + ex.Message);
-                    Thread.Sleep(1000);
+            try {
+                while (_isRunning) {
+                    try {
+                        RunStreamingSession();
+                    } catch (Exception ex) {
+                        TriggerStatus("Audio Engine Warning: " + ex.Message);
+                        Thread.Sleep(1000);
+                    }
                 }
-            }
-
-            if (mmcssHandle != IntPtr.Zero) {
-                AvRevertMmThreadCharacteristics(mmcssHandle);
+            } finally {
+                TimeEndPeriod(1);
+                if (mmcssHandle != IntPtr.Zero) {
+                    AvRevertMmThreadCharacteristics(mmcssHandle);
+                }
             }
         }
 
@@ -261,7 +385,6 @@ namespace DualAudioMirror {
                 enumerator.GetDevice(CaptureDeviceId, out devCap);
             }
             if (devCap == null) {
-                // Default to Voicemeeter Input or system default
                 var all = GetPlaybackDevices();
                 var vm = all.Find(d => d.Name.Contains("Voicemeeter Input"));
                 if (vm != null) enumerator.GetDevice(vm.Id, out devCap);
@@ -286,9 +409,12 @@ namespace DualAudioMirror {
             IntPtr pFmt;
             cCap.GetMixFormat(out pFmt);
 
-            // 15ms buffer duration = 150,000 100-nanoseconds
-            long hnsBufferDuration = 150000;
-            int hr = cCap.Initialize(0, 0x00020000, hnsBufferDuration, 0, pFmt, ref sessionGuid);
+            short capChannels = Marshal.ReadInt16(pFmt, 2);
+            int capSampleRate = Marshal.ReadInt32(pFmt, 4);
+
+            // 20ms capture buffer duration
+            long hnsCaptureBufferDuration = 200000;
+            int hr = cCap.Initialize(0, 0x00020000, hnsCaptureBufferDuration, 0, pFmt, ref sessionGuid);
             if (hr != 0) {
                 TriggerStatus("Capture init failed (0x" + hr.ToString("X8") + ")");
                 Thread.Sleep(500);
@@ -306,6 +432,9 @@ namespace DualAudioMirror {
             }
 
             var readyChannels = new List<OutputChannel>();
+            // Generous 40ms render buffer duration to protect against hardware DAC jitter / underruns
+            long hnsRenderBufferDuration = 400000;
+
             foreach (var ch in activeChannels) {
                 ch.Client = null;
                 ch.Render = null;
@@ -321,19 +450,28 @@ namespace DualAudioMirror {
                         object oRender;
                         devRender.Activate(ref IID_IAudioClient, 1, IntPtr.Zero, out oRender);
                         var cRender = (IAudioClient)oRender;
-                        if (cRender.Initialize(0, 0, hnsBufferDuration, 0, pFmt, ref sessionGuid) == 0) {
+                        if (cRender.Initialize(0, 0, hnsRenderBufferDuration, 0, pFmt, ref sessionGuid) == 0) {
                             IntPtr pRenderService;
                             cRender.GetService(ref IID_IAudioRenderClient, out pRenderService);
                             var renderClient = (IAudioRenderClient)Marshal.GetObjectForIUnknown(pRenderService);
                             uint bufSize;
                             cRender.GetBufferSize(out bufSize);
-                            cRender.Start();
 
                             ch.Client = cRender;
                             ch.Render = renderClient;
                             ch.BufferSize = bufSize;
-                            ch.ProcessBuffer = new float[16384];
+                            ch.ProcessBuffer = new float[32768];
+                            ch.Fifo.Clear();
 
+                            // Pre-fill with ~20ms of silence so the endpoint begins with a healthy safety cushion
+                            uint prefillFrames = Math.Min(bufSize / 2, 960u);
+                            IntPtr pPre;
+                            if (renderClient.GetBuffer(prefillFrames, out pPre) == 0) {
+                                ch.Fifo.Read(pPre, (int)prefillFrames); // Will write silence since Fifo is currently empty
+                                renderClient.ReleaseBuffer(prefillFrames, 0);
+                            }
+
+                            cRender.Start();
                             readyChannels.Add(ch);
                         }
                     }
@@ -344,14 +482,17 @@ namespace DualAudioMirror {
             }
 
             cCap.Start();
-            TriggerStatus("Active • " + readyChannels.Count + " Outputs Synced • 48.0 kHz");
+            TriggerStatus("Active • " + readyChannels.Count + " Outputs Synced • " + (capSampleRate / 1000.0).ToString("F1") + " kHz");
 
-            float[] floatBuffer = new float[16384];
+            float[] rawCaptureBuffer = new float[65536];
+            float[] stereoBuffer = new float[32768];
 
             while (_isRunning) {
                 uint packetSize;
                 int hrNext = capService.GetNextPacketSize(out packetSize);
-                if (hrNext != 0) break; // Device invalidated or changed
+                if (hrNext != 0) break; // Device invalidated or unplugged
+
+                bool hadActivity = false;
 
                 while (packetSize > 0 && _isRunning) {
                     IntPtr pData;
@@ -359,55 +500,96 @@ namespace DualAudioMirror {
                     uint flags;
                     ulong devPos, qpcPos;
                     if (capService.GetBuffer(out pData, out numFrames, out flags, out devPos, out qpcPos) == 0 && numFrames > 0) {
-                        int numFloats = (int)numFrames * 2;
-                        if (numFloats > floatBuffer.Length) {
-                            floatBuffer = new float[numFloats * 2];
+                        hadActivity = true;
+                        bool isSilent = (flags & 2) != 0;
+                        int stereoFloats = (int)numFrames * 2;
+
+                        if (stereoFloats > stereoBuffer.Length) {
+                            stereoBuffer = new float[stereoFloats * 2];
                         }
 
-                        bool isSilent = (flags & 2) != 0;
-                        float maxL = 0f, maxR = 0f;
-
                         if (isSilent) {
-                            Array.Clear(floatBuffer, 0, numFloats);
+                            Array.Clear(stereoBuffer, 0, stereoFloats);
+                            PeakMasterL = 0f;
+                            PeakMasterR = 0f;
                         } else {
-                            Marshal.Copy(pData, floatBuffer, 0, numFloats);
+                            if (capChannels == 2) {
+                                Marshal.Copy(pData, stereoBuffer, 0, stereoFloats);
+                            } else if (capChannels == 8) {
+                                // Downmix 7.1 Surround (FL, FR, Center, LFE, BL, BR, SL, SR) to Stereo
+                                int rawCount = (int)numFrames * 8;
+                                if (rawCount > rawCaptureBuffer.Length) rawCaptureBuffer = new float[rawCount * 2];
+                                Marshal.Copy(pData, rawCaptureBuffer, 0, rawCount);
+
+                                for (int f = 0; f < numFrames; f++) {
+                                    int b = f * 8;
+                                    float fl = rawCaptureBuffer[b];
+                                    float fr = rawCaptureBuffer[b + 1];
+                                    float c  = rawCaptureBuffer[b + 2];
+                                    float bl = rawCaptureBuffer[b + 4];
+                                    float br = rawCaptureBuffer[b + 5];
+                                    float sl = rawCaptureBuffer[b + 6];
+                                    float sr = rawCaptureBuffer[b + 7];
+                                    stereoBuffer[f * 2]     = (fl + 0.707f * c + 0.707f * sl + 0.707f * bl) * 0.5f;
+                                    stereoBuffer[f * 2 + 1] = (fr + 0.707f * c + 0.707f * sr + 0.707f * br) * 0.5f;
+                                }
+                            } else if (capChannels == 6) {
+                                // Downmix 5.1 Surround (FL, FR, Center, LFE, SL, SR) to Stereo
+                                int rawCount = (int)numFrames * 6;
+                                if (rawCount > rawCaptureBuffer.Length) rawCaptureBuffer = new float[rawCount * 2];
+                                Marshal.Copy(pData, rawCaptureBuffer, 0, rawCount);
+
+                                for (int f = 0; f < numFrames; f++) {
+                                    int b = f * 6;
+                                    float fl = rawCaptureBuffer[b];
+                                    float fr = rawCaptureBuffer[b + 1];
+                                    float c  = rawCaptureBuffer[b + 2];
+                                    float sl = rawCaptureBuffer[b + 4];
+                                    float sr = rawCaptureBuffer[b + 5];
+                                    stereoBuffer[f * 2]     = (fl + 0.707f * c + 0.707f * sl) * 0.6f;
+                                    stereoBuffer[f * 2 + 1] = (fr + 0.707f * c + 0.707f * sr) * 0.6f;
+                                }
+                            } else {
+                                // Fallback: Take first 2 channels
+                                int rawCount = (int)numFrames * capChannels;
+                                if (rawCount > rawCaptureBuffer.Length) rawCaptureBuffer = new float[rawCount * 2];
+                                Marshal.Copy(pData, rawCaptureBuffer, 0, rawCount);
+
+                                for (int f = 0; f < numFrames; f++) {
+                                    stereoBuffer[f * 2]     = rawCaptureBuffer[f * capChannels];
+                                    stereoBuffer[f * 2 + 1] = rawCaptureBuffer[f * capChannels + 1];
+                                }
+                            }
+
                             // Measure Master Peaks
-                            for (int i = 0; i < numFloats; i += 2) {
-                                float l = Math.Abs(floatBuffer[i]);
-                                float r = Math.Abs(floatBuffer[i + 1]);
+                            float maxL = 0f, maxR = 0f;
+                            for (int i = 0; i < stereoFloats; i += 2) {
+                                float l = Math.Abs(stereoBuffer[i]);
+                                float r = Math.Abs(stereoBuffer[i + 1]);
                                 if (l > maxL) maxL = l;
                                 if (r > maxR) maxR = r;
                             }
+                            PeakMasterL = maxL;
+                            PeakMasterR = maxR;
                         }
 
-                        PeakMasterL = maxL;
-                        PeakMasterR = maxR;
-
+                        // Distribute to each active channel's ring buffer with volume & mute applied
                         for (int i = 0; i < readyChannels.Count; i++) {
                             var ch = readyChannels[i];
-                            if (ch.Render == null || ch.Client == null) continue;
-
-                            if (ch.ProcessBuffer == null || ch.ProcessBuffer.Length < numFloats) {
-                                ch.ProcessBuffer = new float[numFloats * 2];
+                            if (ch.ProcessBuffer == null || ch.ProcessBuffer.Length < stereoFloats) {
+                                ch.ProcessBuffer = new float[stereoFloats * 2];
                             }
 
                             float g = ch.IsMuted ? 0f : ch.Volume;
-                            for (int f = 0; f < numFloats; f++) {
-                                ch.ProcessBuffer[f] = floatBuffer[f] * g;
+                            for (int f = 0; f < stereoFloats; f++) {
+                                ch.ProcessBuffer[f] = stereoBuffer[f] * g;
                             }
-                            ch.PeakL = maxL * g;
-                            ch.PeakR = maxR * g;
+                            ch.PeakL = PeakMasterL * g;
+                            ch.PeakR = PeakMasterR * g;
 
-                            uint pad;
-                            if (ch.Client.GetCurrentPadding(out pad) == 0) {
-                                if (ch.BufferSize - pad >= numFrames) {
-                                    IntPtr pRender;
-                                    if (ch.Render.GetBuffer(numFrames, out pRender) == 0) {
-                                        Marshal.Copy(ch.ProcessBuffer, 0, pRender, numFloats);
-                                        ch.Render.ReleaseBuffer(numFrames, 0);
-                                    }
-                                }
-                            }
+                            ch.Fifo.Write(ch.ProcessBuffer, 0, (int)numFrames);
+                            // Keep buffer backlog under 50ms (2400 frames at 48kHz) to eliminate clock drift
+                            ch.Fifo.MaintainWatermark(2400);
                         }
 
                         capService.ReleaseBuffer(numFrames);
@@ -417,7 +599,31 @@ namespace DualAudioMirror {
                     capService.GetNextPacketSize(out packetSize);
                 }
 
-                Thread.Sleep(1);
+                // Feed each render channel dynamically from its FIFO
+                for (int i = 0; i < readyChannels.Count; i++) {
+                    var ch = readyChannels[i];
+                    if (ch.Render == null || ch.Client == null) continue;
+
+                    uint pad;
+                    if (ch.Client.GetCurrentPadding(out pad) == 0) {
+                        uint space = ch.BufferSize - pad;
+                        uint available = (uint)ch.Fifo.AvailableFrames;
+                        uint framesToWrite = Math.Min(space, available);
+
+                        if (framesToWrite > 0) {
+                            IntPtr pRender;
+                            if (ch.Render.GetBuffer(framesToWrite, out pRender) == 0) {
+                                ch.Fifo.Read(pRender, (int)framesToWrite);
+                                ch.Render.ReleaseBuffer(framesToWrite, 0);
+                                hadActivity = true;
+                            }
+                        }
+                    }
+                }
+
+                if (!hadActivity) {
+                    Thread.Sleep(1);
+                }
             }
 
             try { cCap.Stop(); } catch { }
